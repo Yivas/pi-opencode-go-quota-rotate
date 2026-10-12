@@ -1,0 +1,50 @@
+name: Documentation problem
+description: Report an incorrect claim or broken documentation link.
+body:
+- type: markdown
+  attributes:
+    value: Do not include API keys, account identifiers, prompts, transcripts or raw logs. Security-sensitive
+      reports belong in [private reporting](https://github.com/Yivas/pi-opencode-go-quota-rotate/security/advisories/new).
+      No executable release exists yet.
+- type: input
+  id: revision
+  attributes:
+    label: Commit or documentation page
+  validations:
+    required: true
+- type: input
+  id: environment
+  attributes:
+    label: Pi version, host mode and operating system
+    description: Use not applicable for documentation-only reports.
+  validations:
+    required: true
+- type: textarea
+  id: problem
+  attributes:
+    label: What is incorrect?
+  validations:
+    required: true
+- type: textarea
+  id: reproduction
+  attributes:
+    label: Sanitized reproduction or example
+  validations:
+    required: true
+- type: textarea
+  id: expected
+  attributes:
+    label: Expected and observed behavior
+  validations:
+    required: true
+- type: checkboxes
+  id: checks
+  attributes:
+    label: Before submitting
+    options:
+    - label: I searched existing issues.
+      required: true
+    - label: I understand there is no executable release or supported runtime yet.
+      required: true
+    - label: I removed secrets and private data and read the Code of Conduct.
+      required: true

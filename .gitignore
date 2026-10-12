@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+*.log
+.mcp.json
+opencode.json
+.pi/
+.agent-memory/
