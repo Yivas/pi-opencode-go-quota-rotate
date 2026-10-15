@@ -1,6 +1,6 @@
 # pi-opencode-go-quota-rotate
 
-Quota-aware OpenCode Go account rotation for Pi. Early development: Windows x64 only, not published, not yet verified against a real Go account.
+Quota-aware OpenCode Go account rotation for Pi. Windows x64 only. Verified with Pi 1.1.0 and Node 24.9.0 and with two real Go accounts of the author; rotation after real quota exhaustion has not been observed yet.
 
 ## What it does
 
@@ -19,10 +19,19 @@ Quota-aware OpenCode Go account rotation for Pi. Early development: Windows x64 
 - **Protected storage runs in a helper process** with native code (Koffi). It fails closed: if storage is unavailable, managed requests are blocked rather than falling back to anything else. An update whose acknowledgement is lost is reported as indeterminate and never replayed. This is crash isolation, not a sandbox against malicious native code.
 - The auxiliary requests Pi makes without a signal (for example cache warming) are refused on the managed path.
 
+## Install
+
+```text
+pi install npm:pi-opencode-go-quota-rotate
+```
+
+Then run `/login`, choose OpenCode Go, give the account a name and paste its key. Repeat for each account. The package depends on [Koffi](https://koffi.dev/) 3.3.3 (MIT), which Pi's installer fetches with its prebuilt Windows binary.
+
 ## Development
 
 ```text
 npm install      # Pi 1.1.0 and Node 24.9.0 are the versions exercised so far
+npm run build    # compiles dist/, the code Pi loads
 node scripts/test.mjs
 ```
 

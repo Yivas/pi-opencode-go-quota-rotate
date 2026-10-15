@@ -2,7 +2,8 @@
 
 | Line | Support |
 | --- | --- |
-| main | Documentation only; no executable release or supported runtime yet |
+| 0.1.x | Windows x64, Pi 1.1.0, Node 24.9.0 |
+| main | Development; may differ from the latest release |
 
 ## Reporting
 
@@ -14,4 +15,4 @@ Reports are assessed privately; additional sanitized details may be requested an
 
 ## Limits
 
-No extension is implemented. Credential protection, compatibility and quota handling have not been tested. Provider account policies and service availability remain outside this project's control. Do not send real credentials to demonstrate a documentation issue.
+Credential protection and quota handling are tested with synthetic data and two real accounts of the author, not audited by a third party. The helper process isolates native crashes; it is not a sandbox against malicious native code. Only Windows x64 is supported. Provider account policies and service availability remain outside this project's control. Do not send real credentials to demonstrate a documentation issue.

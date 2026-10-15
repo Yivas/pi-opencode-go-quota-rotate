@@ -40,7 +40,7 @@ function receive(message) {
     if (message.kind !== "native" && typeof message.root !== "string") return terminate();
     if (message.kind === "native" && (!message.request
       || !["directory", "file", "protect", "unprotect"].includes(message.request.operation))) return terminate();
-    worker = new Worker(path.join(__dirname, "vault-thread.ts"), { workerData: { job: message, ownedStorageWorker: true } });
+    worker = new Worker(path.join(__dirname, require("node:fs").existsSync(path.join(__dirname, "vault-thread.js")) ? "vault-thread.js" : "vault-thread.ts"), { workerData: { job: message, ownedStorageWorker: true } });
     worker.on("error", () => terminate());
     worker.on("exit", () => { if (phase !== "done") terminate(); });
     worker.on("message", (reply) => {

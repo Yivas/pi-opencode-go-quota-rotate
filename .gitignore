@@ -8,3 +8,4 @@ coverage/
 opencode.json
 .pi/
 .agent-memory/
+*.tgz

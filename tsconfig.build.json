@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": ".",
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": false,
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["index.ts", "gate.ts", "quota.ts", "selection.ts", "transport.ts", "locales/**/*.ts", "storage/**/*.ts"]
+}

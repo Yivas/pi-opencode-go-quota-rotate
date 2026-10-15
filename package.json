@@ -1,25 +1,56 @@
 {
   "name": "pi-opencode-go-quota-rotate",
-  "version": "0.1.0-dev",
-  "private": true,
-  "type": "module",
+  "version": "0.1.0",
+  "description": "Quota-aware OpenCode Go account rotation for Pi, with protected key storage (Windows x64).",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "opencode-go",
+    "quota",
+    "rotation"
+  ],
   "license": "MIT",
+  "author": "Yivas",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yivas/pi-opencode-go-quota-rotate.git"
+  },
+  "homepage": "https://github.com/Yivas/pi-opencode-go-quota-rotate#readme",
+  "bugs": {
+    "url": "https://github.com/Yivas/pi-opencode-go-quota-rotate/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
-    "test": "node scripts/test.mjs"
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/test.mjs",
+    "prepack": "npm run build"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "1.1.0",
-    "@earendil-works/pi-coding-agent": "1.1.0"
-  },
-  "devDependencies": {
-    "@types/node": "24.9.0"
-  },
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
   },
   "dependencies": {
     "koffi": "3.3.3"
+  },
+  "devDependencies": {
+    "@types/node": "24.9.0",
+    "typescript": "5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

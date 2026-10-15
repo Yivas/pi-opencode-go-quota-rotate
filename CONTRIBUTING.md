@@ -1,6 +1,6 @@
 # Contributing
 
-Issues and pull requests are accepted. Implementation is in progress, with no usable release or supported-platform matrix. Local tests run with `node scripts/test.mjs` and exact dependency versions from package.json; Windows native checks use synthetic data. Do not use personal credentials or configuration for tests. Discuss changes to behavior or scope in an issue before opening a code pull request.
+Issues and pull requests are accepted. Version 0.1.x supports Windows x64 only. Local tests run with `node scripts/test.mjs` and exact dependency versions from package.json; Windows native checks use synthetic data. Do not use personal credentials or configuration for tests. Discuss changes to behavior or scope in an issue before opening a code pull request.
 
 Search existing issues first. Use the issue forms for a documentation problem or a proposal. Include the affected commit/file, Pi and operating-system context when relevant, a sanitized reproduction, and expected versus observed behavior. Use “not applicable” for runtime fields when reporting a documentation problem.
 

@@ -1,7 +1,7 @@
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isModelType, lazyStream } from "@earendil-works/pi-ai";
-import type { AnyModel, CredentialStore, Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { AnyModel, Api, ApiStreamOptions, CredentialStore, Model, Provider, RefreshModelsContext, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { messages } from "./locales/en.ts";
 import { addAccount, listAccounts, removeAccount, setAccountEnabled } from "./storage/account-setup.ts";
@@ -85,7 +85,7 @@ async function refreshCatalog(state: CatalogState, context: RefreshModelsContext
   });
 }
 
-function managedStream(state: CatalogState, simple: boolean, model: never, context: never, options: never) {
+function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, context: TranscriptContext, options?: unknown) {
   return lazyStream(model, async () => {
     const raw = state.raw;
     if (!raw) throw new Error(messages.blocked);
@@ -93,7 +93,7 @@ function managedStream(state: CatalogState, simple: boolean, model: never, conte
     const signal = requested?.signal ?? new AbortController().signal;
     // Decided before any query or send; a closed barrier costs no network.
     const grant = state.gate.authorize(signal);
-    let next: never;
+    let next: ApiStreamOptions<Api>;
     try {
       const base = requested?.fetch ?? globalThis.fetch;
       // Authorization happens here, from the protected accounts as they are now.
@@ -104,13 +104,13 @@ function managedStream(state: CatalogState, simple: boolean, model: never, conte
       if (!first) throw new Error(signal.aborted ? messages.storageCancelled : messages.noUsableAccount);
       const signed = state.transport.signedFetch(accounts, first, base, signal, grant.take);
       // Retries inside the SDK would bypass the attempt budget; the transport counts every send.
-      next = { ...(options as object), apiKey: "managed", fetch: signed, maxRetries: 0 } as never;
+      next = { ...(options as object), apiKey: "managed", fetch: signed, maxRetries: 0 } as ApiStreamOptions<Api>;
     } catch (error) {
       // A failure before the send still ends the step: the host retry must not retry it.
       grant.finish(true);
       throw error;
     }
-    const result = simple ? raw.streamSimple(model, context, next) : raw.stream(model, context, next);
+    const result = simple ? raw.streamSimple(model, context, next as SimpleStreamOptions) : raw.stream(model, context, next);
     // The barrier closes before control returns to the host.
     void result.result().then((message) => grant.finish(message.stopReason === "error" || message.stopReason === "aborted"), () => grant.finish(true));
     return result;
@@ -217,7 +217,7 @@ async function manageAccounts(context: ExtensionCommandContext): Promise<void> {
     const picked = await context.ui.select(messages.accountsMenu, [...names.keys()]);
     const account = picked ? names.get(picked) : undefined;
     if (!account) return;
-    const actions = new Map([
+    const actions = new Map<string, string>([
       [account.enabled ? messages.accountDisable : messages.accountEnable, "toggle"],
       [messages.accountRemove, "remove"],
     ]);

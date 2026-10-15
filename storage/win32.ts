@@ -16,6 +16,6 @@ export async function windowsProtection(request: NativeRequest, signal?: AbortSi
     native ??= import("./win32-native.cjs").then((module) => module.nativeApi());
     const api = await native;
     if (request.operation === "directory" || request.operation === "file") return api[request.operation](request.path);
-    return api.crypt(request.operation, request.data);
+    return api.crypt(request.operation, (request as { data: string }).data);
   } catch { throw new StorageError("unavailable"); }
 }
