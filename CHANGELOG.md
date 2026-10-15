@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 - 2026-10-15
+
+- Document how to make background subagents use the extension when your settings restrict their extensions.
+
 ## 0.1.0 - 2026-10-15
 
 First release. Windows x64 only; verified with Pi 1.1.0 and Node 24.9.0 and with two real Go accounts of the author. Rotation after real quota exhaustion has not been observed yet.

@@ -27,6 +27,18 @@ pi install npm:pi-opencode-go-quota-rotate
 
 Then run `/login`, choose OpenCode Go, give the account a name and paste its key. Repeat for each account. The package depends on [Koffi](https://koffi.dev/) 3.3.3 (MIT), which Pi's installer fetches with its prebuilt Windows binary.
 
+### Subagents
+
+Subagents that run in the background load only the extensions in your Pi settings, so they use the original Go provider and fail with "No API key found for opencode-go". If your settings define `subagents.defaultExtensions` (or an agent's `extensions`), add this package's entry file to that list and run `/reload`:
+
+```json
+"subagents": {
+  "defaultExtensions": ["<pi agent dir>/npm/node_modules/pi-opencode-go-quota-rotate/dist/index.js"]
+}
+```
+
+Foreground subagents inherit the provider from the main session and need nothing.
+
 ## Development
 
 ```text
