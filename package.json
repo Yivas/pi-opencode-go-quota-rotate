@@ -1,6 +1,6 @@
 {
   "name": "pi-opencode-go-quota-rotate",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Quota-aware OpenCode Go account rotation for Pi, with protected key storage (Windows x64).",
   "keywords": [
     "pi-package",

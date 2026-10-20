@@ -9,5 +9,14 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["index.ts", "gate.ts", "quota.ts", "selection.ts", "transport.ts", "locales/**/*.ts", "storage/**/*.ts"]
+  "include": [
+    "index.ts",
+    "gate.ts",
+    "quota.ts",
+    "selection.ts",
+    "transport.ts",
+    "status.ts",
+    "locales/**/*.ts",
+    "storage/**/*.ts"
+  ]
 }

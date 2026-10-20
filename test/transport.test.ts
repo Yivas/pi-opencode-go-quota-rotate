@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { parseUsage } from "../quota.ts";
 import { choose } from "../selection.ts";
 import { ManagedTransport } from "../transport.ts";
+import { formatStatus } from "../status.ts";
 import type { StoredAccount } from "../storage/accounts.ts";
 
 const reset = "2099-01-01T00:00:00Z";
@@ -99,4 +100,28 @@ test("quota queries never exceed one per account per minute and are shared", asy
   clock += 30_000;
   await transport.select(accounts, fetchStub, signal);
   assert.equal(calls.length, 2);
+});
+
+test("status shows rejected and unknown accounts without counting extra queries", async () => {
+  const { calls, fetchStub } = server({
+    "synthetic-key-aaaaaaaa-1": () => new Response("no", { status: 401 }),
+    "synthetic-key-bbbbbbbb-2": () => new Response("down", { status: 503 }),
+  });
+  const transport = new ManagedTransport({ accounts: async () => accounts, now: () => 9_000_000 });
+  const signal = new AbortController().signal;
+  const first = await transport.status(accounts, fetchStub, signal);
+  assert.deepEqual(first.map((entry) => [entry.rejected, entry.observation === undefined]), [[true, true], [false, true]]);
+  await transport.status(accounts, fetchStub, signal);
+  assert.equal(calls.length, 2, "a second look inside the minute reuses the cadence");
+});
+
+test("status display hides stale readings and shows no room in a rate-limited window", () => {
+  const now = 10_000_000;
+  const reading = parseUsage(JSON.stringify({ usage: {
+    rolling: { status: "rate-limited", percent: 70, resetsAt: "2099-01-01T00:00:00Z" },
+    weekly: { status: "ok", percent: 10, resetsAt: "2099-01-01T00:00:00Z" } } }), now - 5_000);
+  const base = { id: "a", label: "Work", enabled: true, active: true, rejected: false, excluded: false };
+  assert.match(formatStatus([{ ...base, observation: reading }], now), /▸ Work · exhausted · 5h 0% left/);
+  assert.match(formatStatus([{ ...base, observation: reading }], now + 120_000), /Work · usage unknown \(last reading expired\)/);
+  assert.match(formatStatus([{ ...base, enabled: false }], now), /^ {2}Work · disabled$/m);
 });

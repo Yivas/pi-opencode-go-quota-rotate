@@ -5,7 +5,7 @@ Quota-aware OpenCode Go account rotation for Pi. Windows x64 only. Verified with
 ## What it does
 
 - Keeps the original OpenCode Go provider, its catalog, your `models.json` customizations, reloads and all three native APIs (Anthropic Messages, OpenAI Completions, OpenAI Responses). It uses only Pi's public extension API and changes nothing in Pi.
-- Stores several Go API keys in protected storage (Windows DPAPI for your user, AES-256-GCM, current-user-only ACL). Add a key with Pi's `/login` for OpenCode Go (hidden input); list, disable or remove accounts with `/go-accounts`. Keys never appear in menus, notices, logs or arguments.
+- Stores several Go API keys in protected storage (Windows DPAPI for your user, AES-256-GCM, current-user-only ACL). Add a key with Pi's `/login` for OpenCode Go (hidden input); list, disable or remove accounts with `/go-accounts`; see every account's remaining usage per window (5 hours, week, month), its reset time and which one is in use with `/go-status`. Keys never appear in menus, notices, logs or arguments.
 - Before a request it reads each account's usage from `https://opencode.ai/zen/go/v1/usage` (at most one query per account per minute, 5 s timeout), keeps your current account while it is usable, and otherwise picks the one with the most room in its tightest window. Ties go to the nearest reset, then a stable ID. Quota windows are never added together, and accounts of one workspace do not multiply quota.
 - Signs every request with the chosen key itself. On a 429 it rotates once, and only if a fresh usage reading confirms the account is exhausted; otherwise you get the original response. SDK retries are off, so a request makes at most two sends.
 - After a failed step the host's automatic retry sends nothing; a new message from you reopens it. Compaction and branch summaries have their own small send budgets.
@@ -25,7 +25,7 @@ Quota-aware OpenCode Go account rotation for Pi. Windows x64 only. Verified with
 pi install npm:pi-opencode-go-quota-rotate
 ```
 
-Then run `/login`, choose OpenCode Go, give the account a name and paste its key. Repeat for each account. The package depends on [Koffi](https://koffi.dev/) 3.3.3 (MIT), which Pi's installer fetches with its prebuilt Windows binary.
+Then run `/login`, choose OpenCode Go, give the account a name and paste its key. Repeat for each account, and check them with `/go-status`. The package depends on [Koffi](https://koffi.dev/) 3.3.3 (MIT), which Pi's installer fetches with its prebuilt Windows binary.
 
 ### Subagents
 

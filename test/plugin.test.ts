@@ -66,12 +66,13 @@ async function host(t: TestContext) {
   const context = { modelRegistry: registry, hasUI: true, ui: { notify(message: string) { notices.push(message); } } } as unknown as ExtensionContext;
   const others = new Map<string, (event: unknown, context: ExtensionContext) => unknown>();
   let commandHandler: ((args: string, context: ExtensionCommandContext) => Promise<void>) | undefined;
+  const commands = new Map<string, typeof commandHandler>();
   function start() {
     let handler: ((event: never, context: ExtensionContext) => unknown) | undefined;
     // Pi is the external boundary; the registry/runtime below are real SDK instances.
     quotaRotation({
       on(event: string, callback: never) { if (event === "session_start") handler = callback as typeof handler; else others.set(event, callback); },
-      registerCommand(_name: string, options: { handler: typeof commandHandler }) { commandHandler = options.handler; },
+      registerCommand(name: string, options: { handler: typeof commandHandler }) { commands.set(name, options.handler); },
     } as unknown as ExtensionAPI);
     assert.ok(handler);
     return Promise.resolve(handler(null as never, context));
@@ -79,7 +80,7 @@ async function host(t: TestContext) {
   return {
     runtime, registry, notices, start, remote, agentDirectory, context,
     emit(event: string, payload: unknown) { return others.get(event)?.(payload, context); },
-    command() { assert.ok(commandHandler); return commandHandler; },
+    command(name = "go-accounts") { const handler = commands.get(name); assert.ok(handler); return handler; },
     async configure(custom: boolean) {
       configuration = { providers: { "opencode-go": {
         baseUrl: "https://opencode.ai/zen/go/v1",
@@ -420,4 +421,25 @@ test("the turn retried after a successful overflow compaction is allowed", { ski
   await app.emit("session_compact", {});
   await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
   assert.equal(sends, 2);
+});
+
+test("/go-status lists every account with its remaining usage and never shows keys", { skip: !windows }, async (t) => {
+  const app = await host(t);
+  await app.start();
+  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  await app.runtime.login("opencode-go", "api_key", loginWith(["Spare", "synthetic-account-key-0002"]).interaction);
+  t.mock.method(globalThis, "fetch", (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const key = new Headers(init?.headers).get("authorization");
+    const used = key === `Bearer ${secret}` ? 18 : 100;
+    return new Response(JSON.stringify({ usage: {
+      rolling: { status: used === 100 ? "rate-limited" : "ok", percent: used, resetsAt: "2099-01-01T05:00:00Z" },
+      weekly: { status: "ok", percent: 40, resetsAt: "2099-01-07T00:00:00Z" },
+      monthly: { status: "ok", percent: 9, resetsAt: "2099-02-01T00:00:00Z" } } }));
+  }) as typeof fetch);
+  const shown: string[] = [];
+  await app.command("go-status")("", { modelRegistry: app.registry, ui: { notify(message: string) { shown.push(message); } } } as unknown as ExtensionCommandContext);
+  const text = shown.join(" | ");
+  assert.match(text, /Work · 5h 82% left .*week 60% left .*month 91% left/);
+  assert.match(text, /Spare · exhausted · 5h 0% left/);
+  assert.equal(text.includes(secret) || text.includes("synthetic-account-key-0002"), false);
 });

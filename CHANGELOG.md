@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0 - 2026-10-20
+
+- New `/go-status` command: lists every Go account with the account in use, the usage left in each window (5 hours, week, month) and when each resets. Disabled, rejected, exhausted and unknown accounts are labelled; keys are never shown.
+- A key the server rejected is no longer queried for usage every minute.
+
 ## 0.1.1 - 2026-10-15
 
 - Document how to make background subagents use the extension when your settings restrict their extensions.

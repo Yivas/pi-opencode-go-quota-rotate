@@ -2,6 +2,8 @@ export const usageUrl = "https://opencode.ai/zen/go/v1/usage";
 const maxBody = 65536;
 
 export interface QuotaWindow {
+  /** Label for the endpoint's rolling (5-hour), weekly and monthly windows. */
+  name: "5h" | "week" | "month";
   exhausted: boolean;
   /** Share of the window still available, 0-100. */
   remaining: number;
@@ -18,7 +20,7 @@ export type QuotaResult =
   | { kind: "unauthorized" }
   | { kind: "failed" };
 
-function window(value: unknown): QuotaWindow | undefined {
+function window(value: unknown, name: QuotaWindow["name"]): QuotaWindow | undefined {
   if (!value || typeof value !== "object") return undefined;
   const { status, percent, resetsAt } = value as Record<string, unknown>;
   if ((status !== "ok" && status !== "rate-limited") || typeof percent !== "number"
@@ -28,7 +30,7 @@ function window(value: unknown): QuotaWindow | undefined {
     reset = typeof resetsAt === "string" ? Date.parse(resetsAt) : Number.NaN;
     if (!Number.isFinite(reset)) return undefined;
   }
-  return { exhausted: status === "rate-limited" || percent >= 100, remaining: 100 - percent, resetsAt: reset };
+  return { name, exhausted: status === "rate-limited" || percent >= 100, remaining: 100 - percent, resetsAt: reset };
 }
 
 /** Strict parser for the shape two independent clients use; anything else is unknown. */
@@ -38,12 +40,12 @@ export function parseUsage(text: string, receivedAt: number): QuotaObservation |
   try { payload = JSON.parse(text); } catch { return undefined; }
   const usage = (payload as { usage?: unknown } | null)?.usage as Record<string, unknown> | undefined;
   if (!usage || typeof usage !== "object") return undefined;
-  const rolling = window(usage.rolling);
-  const weekly = window(usage.weekly);
+  const rolling = window(usage.rolling, "5h");
+  const weekly = window(usage.weekly, "week");
   if (!rolling || !weekly) return undefined;
   const windows = [rolling, weekly];
   if (usage.monthly !== undefined) {
-    const monthly = window(usage.monthly);
+    const monthly = window(usage.monthly, "month");
     if (!monthly) return undefined;
     windows.push(monthly);
   }

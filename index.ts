@@ -7,6 +7,7 @@ import { messages } from "./locales/en.ts";
 import { addAccount, listAccounts, removeAccount, setAccountEnabled } from "./storage/account-setup.ts";
 import { AccountVault } from "./storage/vault.ts";
 import { StepGate } from "./gate.ts";
+import { formatStatus } from "./status.ts";
 import { ManagedTransport } from "./transport.ts";
 
 // Resolved at use time so tests and reloads follow the host's agent directory.
@@ -85,6 +86,23 @@ async function refreshCatalog(state: CatalogState, context: RefreshModelsContext
   });
 }
 
+function newTransport(): ManagedTransport {
+  return new ManagedTransport({ accounts: (cancel) => accountVault().read(cancel), now: Date.now });
+}
+
+async function showStatus(context: ExtensionCommandContext): Promise<void> {
+  const state = ownedState(context.modelRegistry.getRegisteredNativeProvider(providerId));
+  if (!state) { context.ui.notify(messages.statusInactive, "warning"); return; }
+  try {
+    const accounts = await accountVault().read(context.signal);
+    state.transport ??= newTransport();
+    const status = await state.transport.status(accounts, globalThis.fetch, context.signal ?? new AbortController().signal);
+    context.ui.notify(formatStatus(status, Date.now()), "info");
+  } catch (error) {
+    context.ui.notify(error instanceof Error ? error.message : messages.storageFailed, "error");
+  }
+}
+
 function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, context: TranscriptContext, options?: unknown) {
   return lazyStream(model, async () => {
     const raw = state.raw;
@@ -98,7 +116,7 @@ function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, 
       const base = requested?.fetch ?? globalThis.fetch;
       // Authorization happens here, from the protected accounts as they are now.
       const accounts = (await accountVault().read(signal)).filter((entry) => entry.enabled);
-      state.transport ??= new ManagedTransport({ accounts: (cancel) => accountVault().read(cancel), now: Date.now });
+      state.transport ??= newTransport();
       if (accounts.length === 0) throw new Error(messages.noAccounts);
       const first = await state.transport.select(accounts, base, signal);
       if (!first) throw new Error(signal.aborted ? messages.storageCancelled : messages.noUsableAccount);
@@ -248,5 +266,6 @@ export default function quotaRotation(pi: ExtensionAPI): void {
     retryAfterCompaction = false;
   });
   pi.on("session_before_tree", (event, context) => { gateOf(context)?.scope(event.signal, "branch"); });
+  pi.registerCommand("go-status", { description: messages.statusCommand, handler: async (_args, context) => showStatus(context) });
   pi.registerCommand("go-accounts", { description: messages.accountsMenu, handler: async (_args, context) => manageAccounts(context) });
 }

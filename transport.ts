@@ -23,6 +23,16 @@ export interface TransportDeps {
 
 type FetchLike = typeof fetch;
 
+export interface AccountStatus {
+  id: string;
+  label: string;
+  enabled: boolean;
+  active: boolean;
+  rejected: boolean;
+  excluded: boolean;
+  observation?: QuotaObservation;
+}
+
 /**
  * Quota state and request signing for managed Go requests. Selection reads the
  * current protected accounts for every operation; nothing here is persisted.
@@ -71,7 +81,7 @@ export class ManagedTransport {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(selectionDeadlineMs)]);
     const now = this.#deps.now();
     // Only accounts without a valid observation are queried; the set is fixed here.
-    const stale = pool.filter((entry) => entry.enabled && !isFresh(this.#entry(entry.id).observation, now));
+    const stale = pool.filter((entry) => entry.enabled && !this.#entry(entry.id).rejected && !isFresh(this.#entry(entry.id).observation, now));
     await Promise.all(stale.map((entry) => this.#refresh(entry, base, deadline)));
     if (deadline.aborted) return undefined;
     const id = choose(this.#candidates(pool), this.#activeId === avoid ? undefined : this.#activeId, this.#deps.now());
@@ -89,6 +99,30 @@ export class ManagedTransport {
     const exhausted = entry.observation !== before && entry.observation !== undefined && isExhausted(entry.observation);
     if (exhausted) entry.excluded = true;
     return exhausted;
+  }
+
+  /**
+   * Status for every account, for display only. Stale readings are refreshed
+   * under the same once-a-minute rule as selection; nothing is selected here.
+   */
+  async status(accounts: StoredAccount[], base: FetchLike, signal: AbortSignal): Promise<AccountStatus[]> {
+    const deadline = AbortSignal.any([signal, AbortSignal.timeout(selectionDeadlineMs)]);
+    const now = this.#deps.now();
+    // A key the server rejected is not queried again; it would only fail again.
+    await Promise.all(accounts.filter((entry) => entry.enabled && !this.#entry(entry.id).rejected && !isFresh(this.#entry(entry.id).observation, now))
+      .map((entry) => this.#refresh(entry, base, deadline)));
+    return accounts.map((account) => {
+      const entry = this.#entry(account.id);
+      return {
+        id: account.id,
+        label: account.label,
+        enabled: account.enabled,
+        active: account.id === this.#activeId,
+        rejected: entry.rejected,
+        excluded: entry.excluded,
+        observation: entry.observation,
+      };
+    });
   }
 
   reject(account: StoredAccount): void { this.#entry(account.id).rejected = true; }
