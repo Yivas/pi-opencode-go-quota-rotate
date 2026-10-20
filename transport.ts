@@ -37,7 +37,14 @@ export interface AccountStatus {
  * Quota state and request signing for managed Go requests. Selection reads the
  * current protected accounts for every operation; nothing here is persisted.
  */
+/**
+ * Bumped whenever ManagedTransport's methods change. The instance outlives a
+ * /reload, so a session upgraded in place must not reuse an older object.
+ */
+export const transportRevision = 2;
+
 export class ManagedTransport {
+  readonly revision = transportRevision;
   readonly #deps: TransportDeps;
   readonly #entries = new Map<string, Entry>();
   #activeId: string | undefined;

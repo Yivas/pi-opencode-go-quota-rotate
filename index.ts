@@ -7,12 +7,12 @@ import { messages } from "./locales/en.ts";
 import { addAccount, removeAccount, toggleAccount } from "./storage/account-setup.ts";
 import { AccountVault } from "./storage/vault.ts";
 import type { StoredAccount } from "./storage/accounts.ts";
-import { StepGate } from "./gate.ts";
+import { gateRevision, StepGate } from "./gate.ts";
 import { AccountMenu } from "./menu.ts";
 import type { MenuChoice } from "./menu.ts";
 import { formatStatus } from "./status.ts";
 import type { AccountStatus } from "./transport.ts";
-import { ManagedTransport } from "./transport.ts";
+import { ManagedTransport, transportRevision } from "./transport.ts";
 
 // Resolved at use time so tests and reloads follow the host's agent directory.
 function accountVault(): AccountVault {
@@ -90,6 +90,31 @@ async function refreshCatalog(state: CatalogState, context: RefreshModelsContext
   });
 }
 
+/** State survives /reload; objects built by an older release are replaced, not reused. */
+const transportMethods = ["select", "signedFetch", "status", "confirmExhausted", "reject"] as const;
+
+function transportOf(state: CatalogState): ManagedTransport {
+  const current = state.transport as unknown as Record<string, unknown> | undefined;
+  // The method check also catches a release that changed methods but forgot the revision bump.
+  if (state.transport?.revision !== transportRevision || !transportMethods.every((name) => typeof current?.[name] === "function")) {
+    state.transport = newTransport();
+  }
+  return state.transport;
+}
+
+/**
+ * Replacing the gate only happens when the release changes. An older gate's
+ * closed barrier cannot be read, so the first step after such an update is
+ * allowed: the user's own /reload is the input that reopens it.
+ */
+function gateOfState(state: CatalogState): StepGate {
+  const current = state.gate as unknown as Record<string, unknown> | undefined;
+  if (state.gate?.revision !== gateRevision || !["authorize", "reopen", "scope"].every((name) => typeof current?.[name] === "function")) {
+    state.gate = new StepGate();
+  }
+  return state.gate;
+}
+
 function newTransport(): ManagedTransport {
   return new ManagedTransport({ accounts: (cancel) => accountVault().read(cancel), now: Date.now });
 }
@@ -101,17 +126,17 @@ function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, 
     const requested = options as { signal?: AbortSignal; fetch?: typeof fetch } | undefined;
     const signal = requested?.signal ?? new AbortController().signal;
     // Decided before any query or send; a closed barrier costs no network.
-    const grant = state.gate.authorize(signal);
+    const grant = gateOfState(state).authorize(signal);
     let next: ApiStreamOptions<Api>;
     try {
       const base = requested?.fetch ?? globalThis.fetch;
       // Authorization happens here, from the protected accounts as they are now.
       const accounts = (await accountVault().read(signal)).filter((entry) => entry.enabled);
-      state.transport ??= newTransport();
+      const transport = transportOf(state);
       if (accounts.length === 0) throw new Error(messages.noAccounts);
-      const first = await state.transport.select(accounts, base, signal);
+      const first = await transport.select(accounts, base, signal);
       if (!first) throw new Error(signal.aborted ? messages.storageCancelled : messages.noUsableAccount);
-      const signed = state.transport.signedFetch(accounts, first, base, signal, grant.take);
+      const signed = transport.signedFetch(accounts, first, base, signal, grant.take);
       // Retries inside the SDK would bypass the attempt budget; the transport counts every send.
       next = { ...(options as object), apiKey: "managed", fetch: signed, maxRetries: 0 } as ApiStreamOptions<Api>;
     } catch (error) {
@@ -248,8 +273,7 @@ async function manageAccounts(context: ExtensionCommandContext): Promise<void> {
   try {
     for (;;) {
       const accounts = await accountVault().read(context.signal);
-      state.transport ??= newTransport();
-      const status = await state.transport.status(accounts, globalThis.fetch, context.signal ?? new AbortController().signal);
+      const status = await transportOf(state).status(accounts, globalThis.fetch, context.signal ?? new AbortController().signal);
       const choice = await context.ui.custom<MenuChoice>((tui, theme, _keys, done) =>
         new AccountMenu(() => tui.requestRender(), theme, status, Date.now(), done));
       // RPC and print modes have no custom panels; they resolve undefined.
@@ -264,7 +288,7 @@ async function manageAccounts(context: ExtensionCommandContext): Promise<void> {
 
 export default function quotaRotation(pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, context) => { await start(context); });
-  const gateOf = (context: ExtensionContext) => ownedState(context.modelRegistry.getRegisteredNativeProvider(providerId))?.gate;
+  const gateOf = (context: ExtensionContext) => { const state = ownedState(context.modelRegistry.getRegisteredNativeProvider(providerId)); return state ? gateOfState(state) : undefined; };
   // Only the user's own input reopens; another extension's injected message does not.
   pi.on("input", (event, context) => { if (event.source !== "extension") gateOf(context)?.reopen(); });
   // Overflow recovery: Pi retries the turn after a successful compaction, so that retry is legitimate.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 - 2026-10-20
+
+- Fix "state.transport.status is not a function" after updating with `/reload` in the same session: objects created by the previous release are replaced instead of reused.
+
 ## 0.2.0 - 2026-10-20
 
 - `/go-accounts` is now a single panel: every account with the usage left in its 5-hour, weekly and monthly windows, the reset times and the account in use, plus adding, disabling and removing accounts.

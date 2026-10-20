@@ -8,7 +8,11 @@ interface Scope { sends: number; readonly max: number }
  * a host retry (new run, new turn) gets nothing. Compaction and branch summaries
  * carry their own signal and their own send budget, independent of the main one.
  */
+/** Bumped whenever StepGate's methods change; see transportRevision. */
+export const gateRevision = 1;
+
 export class StepGate {
+  readonly revision = gateRevision;
   #open = true;
   readonly #scopes = new WeakMap<AbortSignal, Scope>();
 

@@ -474,3 +474,50 @@ test("without the interactive panel the command lists usage as text and never of
   const vault = new AccountVault(join(app.agentDirectory, "opencode-go-quota-rotate"));
   assert.equal((await vault.read())[0]?.enabled, false);
 });
+
+test("after /reload into a newer release, objects left by the older one are replaced, not called", { skip: !windows }, async (t) => {
+  const app = await host(t);
+  await app.start();
+  await app.addAccount("Work", secret);
+  const provider = app.registry.getRegisteredNativeProvider("opencode-go") as unknown as Record<symbol, Record<string, unknown>>;
+  const state = provider[Symbol.for("pi-opencode-go-quota-rotate.catalog.v1")];
+  assert.ok(state);
+  // Shape of the 0.1.x objects: no status(), no revision.
+  state.transport = { select() {}, signedFetch() {} };
+  state.gate = { authorize() { throw new Error("old gate called"); }, reopen() {}, scope() {} };
+  await app.start();
+  const screens: string[] = [];
+  await app.panel([(send, screen) => { screens.push(screen()); send(ESC); }]);
+  assert.match(screens[0] ?? "", /Work/);
+  assert.equal(app.notices.some((notice) => /not a function|old gate/.test(notice)), false);
+  const model = goModels(app.registry).find((entry) => entry.api === "openai-completions");
+  assert.ok(model);
+  const result = await app.runtime.completeSimple(model, { messages: [] }, { fetch: okUsage });
+  assert.doesNotMatch(result.errorMessage ?? "", /old gate|not a function/);
+});
+
+test("a /reload of the same release keeps the closed barrier and the quota state", { skip: !windows }, async (t) => {
+  const app = await host(t);
+  await app.start();
+  await app.addAccount("Work", secret);
+  const model = goModels(app.registry).find((entry) => entry.api === "openai-completions");
+  assert.ok(model);
+  let sends = 0;
+  const failing = (async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/usage")) return okUsage(input);
+    sends++;
+    return new Response("unavailable", { status: 500 });
+  }) as typeof fetch;
+  await app.emit("input", { text: "go" });
+  await app.runtime.completeSimple(model, { messages: [] }, { fetch: failing });
+  assert.equal(sends, 1);
+  const provider = app.registry.getRegisteredNativeProvider("opencode-go") as unknown as Record<symbol, Record<string, unknown>>;
+  const state = provider[Symbol.for("pi-opencode-go-quota-rotate.catalog.v1")];
+  const before = { transport: state?.transport, gate: state?.gate };
+  await app.start();
+  assert.equal(state?.transport, before.transport);
+  assert.equal(state?.gate, before.gate);
+  const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: failing });
+  assert.match(retry.errorMessage ?? "", /host retry was not sent/);
+  assert.equal(sends, 1);
+});
