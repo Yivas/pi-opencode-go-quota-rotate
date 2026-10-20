@@ -121,7 +121,7 @@ test("status display hides stale readings and shows no room in a rate-limited wi
     rolling: { status: "rate-limited", percent: 70, resetsAt: "2099-01-01T00:00:00Z" },
     weekly: { status: "ok", percent: 10, resetsAt: "2099-01-01T00:00:00Z" } } }), now - 5_000);
   const base = { id: "a", label: "Work", enabled: true, active: true, rejected: false, excluded: false };
-  assert.match(formatStatus([{ ...base, observation: reading }], now), /▸ Work · exhausted · 5h 0% left/);
+  assert.match(formatStatus([{ ...base, observation: reading }], now), /▸ Work · exhausted · 5-hour 0% left/);
   assert.match(formatStatus([{ ...base, observation: reading }], now + 120_000), /Work · usage unknown \(last reading expired\)/);
   assert.match(formatStatus([{ ...base, enabled: false }], now), /^ {2}Work · disabled$/m);
 });

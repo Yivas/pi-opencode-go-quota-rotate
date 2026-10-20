@@ -11,6 +11,7 @@
   },
   "include": [
     "index.ts",
+    "menu.ts",
     "gate.ts",
     "quota.ts",
     "selection.ts",

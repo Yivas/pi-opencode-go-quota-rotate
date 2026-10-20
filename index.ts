@@ -4,10 +4,14 @@ import { isModelType, lazyStream } from "@earendil-works/pi-ai";
 import type { AnyModel, Api, ApiStreamOptions, CredentialStore, Model, Provider, RefreshModelsContext, SimpleStreamOptions, TranscriptContext } from "@earendil-works/pi-ai";
 import { join } from "node:path";
 import { messages } from "./locales/en.ts";
-import { addAccount, listAccounts, removeAccount, setAccountEnabled } from "./storage/account-setup.ts";
+import { addAccount, removeAccount, toggleAccount } from "./storage/account-setup.ts";
 import { AccountVault } from "./storage/vault.ts";
+import type { StoredAccount } from "./storage/accounts.ts";
 import { StepGate } from "./gate.ts";
+import { AccountMenu } from "./menu.ts";
+import type { MenuChoice } from "./menu.ts";
 import { formatStatus } from "./status.ts";
+import type { AccountStatus } from "./transport.ts";
 import { ManagedTransport } from "./transport.ts";
 
 // Resolved at use time so tests and reloads follow the host's agent directory.
@@ -90,19 +94,6 @@ function newTransport(): ManagedTransport {
   return new ManagedTransport({ accounts: (cancel) => accountVault().read(cancel), now: Date.now });
 }
 
-async function showStatus(context: ExtensionCommandContext): Promise<void> {
-  const state = ownedState(context.modelRegistry.getRegisteredNativeProvider(providerId));
-  if (!state) { context.ui.notify(messages.statusInactive, "warning"); return; }
-  try {
-    const accounts = await accountVault().read(context.signal);
-    state.transport ??= newTransport();
-    const status = await state.transport.status(accounts, globalThis.fetch, context.signal ?? new AbortController().signal);
-    context.ui.notify(formatStatus(status, Date.now()), "info");
-  } catch (error) {
-    context.ui.notify(error instanceof Error ? error.message : messages.storageFailed, "error");
-  }
-}
-
 function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, context: TranscriptContext, options?: unknown) {
   return lazyStream(model, async () => {
     const raw = state.raw;
@@ -147,14 +138,8 @@ function catalogProvider(state: CatalogState): OwnedProvider {
         name: messages.name,
         // Pi's own /login flow supplies the masked prompt. The key goes only to
         // the protected vault; Pi's credential file gets a keyless marker.
-        async login(interaction) {
-          const label = await interaction.prompt({ type: "text", message: messages.accountLabelPrompt });
-          const key = await interaction.prompt({ type: "secret", message: messages.accountKeyPrompt });
-          await addAccount(accountVault(), label, key, interaction.signal);
-          state.ready = true;
-          interaction.notify({ type: "info", message: messages.accountSaved });
-          return { type: "api_key" };
-        },
+        // Pi's login dialog shows typed text; keys are added from /go-accounts instead.
+        async login() { throw new Error(messages.loginRedirect); },
         async check() {
           // Indicative only: loaded once after a restart; every request re-reads the vault.
           if (state.ready === undefined) {
@@ -226,25 +211,52 @@ async function start(context: ExtensionContext): Promise<void> {
   }
 }
 
-async function manageAccounts(context: ExtensionCommandContext): Promise<void> {
+async function performChoice(state: CatalogState, choice: Exclude<MenuChoice, null>): Promise<string> {
   const vault = accountVault();
+  let saved: StoredAccount[];
+  if (choice.kind === "add") {
+    try { saved = await addAccount(vault, choice.label, choice.key); } finally { choice.key = ""; }
+  } else if (choice.kind === "toggle") saved = await toggleAccount(vault, choice.id);
+  else saved = await removeAccount(vault, choice.id);
+  // Kept in step with every change made here; other processes are covered by the per-request read.
+  state.ready = saved.some((entry) => entry.enabled);
+  return choice.kind === "add" ? messages.accountAdded : messages.accountChanged;
+}
+
+/** Without the interactive terminal there is no hidden input, so adding is not offered. */
+async function manageAccountsAsText(context: ExtensionCommandContext, state: CatalogState, status: AccountStatus[]): Promise<void> {
+  context.ui.notify(formatStatus(status, Date.now()), "info");
+  if (status.length === 0) { context.ui.notify(messages.addOnlyInTerminal, "info"); return; }
+  const names = new Map(status.map((entry, index) => [`${index + 1}. ${entry.label} (${entry.enabled ? "on" : "off"})`, entry]));
+  const picked = await context.ui.select(messages.menuTitle, [...names.keys()]);
+  const account = picked ? names.get(picked) : undefined;
+  if (!account) return;
+  const actions = new Map<string, "toggle" | "remove">([
+    [account.enabled ? messages.accountDisable : messages.accountEnable, "toggle"],
+    [messages.accountRemove, "remove"],
+  ]);
+  const action = actions.get((await context.ui.select(account.label, [...actions.keys()])) ?? "");
+  if (!action) return;
+  if (action === "remove" && !(await context.ui.confirm(messages.accountRemove, messages.accountRemoveConfirm))) return;
+  context.ui.notify(await performChoice(state, { kind: action, id: account.id }), "info");
+}
+
+/** The one command: a panel with every account, its usage left and the actions. */
+async function manageAccounts(context: ExtensionCommandContext): Promise<void> {
+  const state = ownedState(context.modelRegistry.getRegisteredNativeProvider(providerId));
+  if (!state) { context.ui.notify(messages.statusInactive, "warning"); return; }
   try {
-    const accounts = await listAccounts(vault);
-    if (accounts.length === 0) { context.ui.notify(messages.accountsEmpty, "info"); return; }
-    const names = new Map(accounts.map((entry, index) => [`${index + 1}. ${entry.label} (${entry.enabled ? "on" : "off"})`, entry]));
-    const picked = await context.ui.select(messages.accountsMenu, [...names.keys()]);
-    const account = picked ? names.get(picked) : undefined;
-    if (!account) return;
-    const actions = new Map<string, string>([
-      [account.enabled ? messages.accountDisable : messages.accountEnable, "toggle"],
-      [messages.accountRemove, "remove"],
-    ]);
-    const action = actions.get((await context.ui.select(account.label, [...actions.keys()])) ?? "");
-    if (action === "toggle") await setAccountEnabled(vault, account.id, !account.enabled);
-    else if (action === "remove" && await context.ui.confirm(messages.accountRemove, messages.accountRemoveConfirm)) {
-      await removeAccount(vault, account.id);
-    } else return;
-    context.ui.notify(messages.accountChanged, "info");
+    for (;;) {
+      const accounts = await accountVault().read(context.signal);
+      state.transport ??= newTransport();
+      const status = await state.transport.status(accounts, globalThis.fetch, context.signal ?? new AbortController().signal);
+      const choice = await context.ui.custom<MenuChoice>((tui, theme, _keys, done) =>
+        new AccountMenu(() => tui.requestRender(), theme, status, Date.now(), done));
+      // RPC and print modes have no custom panels; they resolve undefined.
+      if (choice === undefined) { await manageAccountsAsText(context, state, status); return; }
+      if (choice === null) return;
+      context.ui.notify(await performChoice(state, choice), "info");
+    }
   } catch (error) {
     context.ui.notify(error instanceof Error ? error.message : messages.storageFailed, "error");
   }
@@ -266,6 +278,5 @@ export default function quotaRotation(pi: ExtensionAPI): void {
     retryAfterCompaction = false;
   });
   pi.on("session_before_tree", (event, context) => { gateOf(context)?.scope(event.signal, "branch"); });
-  pi.registerCommand("go-status", { description: messages.statusCommand, handler: async (_args, context) => showStatus(context) });
   pi.registerCommand("go-accounts", { description: messages.accountsMenu, handler: async (_args, context) => manageAccounts(context) });
 }

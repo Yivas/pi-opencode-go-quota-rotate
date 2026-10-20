@@ -81,6 +81,33 @@ async function host(t: TestContext) {
     runtime, registry, notices, start, remote, agentDirectory, context,
     emit(event: string, payload: unknown) { return others.get(event)?.(payload, context); },
     command(name = "go-accounts") { const handler = commands.get(name); assert.ok(handler); return handler; },
+    /** Drives the real account panel; each script runs on one opening, later openings close it. */
+    async panel(scripts: PanelScript[], ui: Record<string, unknown> = {}, usage: typeof fetch = okUsage) {
+      const queue = [...scripts];
+      const handler = commands.get("go-accounts");
+      assert.ok(handler);
+      // The panel reads usage when it opens; serve a synthetic reading instead of the network.
+      const previousFetch = globalThis.fetch;
+      globalThis.fetch = usage;
+      t.after(() => { globalThis.fetch = previousFetch; });
+      try { await handler("", { modelRegistry: registry, signal: undefined, ui: {
+        notify(message: string) { notices.push(message); },
+        async confirm() { return true; },
+        custom(factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: unknown) => void) => { handleInput(data: string): void; render(width: number): string[] }) {
+          return new Promise((resolve) => {
+            const menu = factory({ requestRender() {} }, plainTheme, {}, resolve);
+            const send = (...keys: string[]) => { for (const key of keys) menu.handleInput(key); };
+            const screen = () => menu.render(160).join(" | ");
+            const script = queue.shift();
+            if (script) script(send, screen); else send(ESC);
+          });
+        },
+        ...ui,
+      } } as unknown as ExtensionCommandContext); } finally { globalThis.fetch = previousFetch; }
+    },
+    addAccount(label: string, key: string) {
+      return this.panel([(send) => send(UP, ENTER, ...label, ENTER, ...key, ENTER)]);
+    },
     async configure(custom: boolean) {
       configuration = { providers: { "opencode-go": {
         baseUrl: "https://opencode.ai/zen/go/v1",
@@ -95,6 +122,16 @@ async function host(t: TestContext) {
     breakCredentials() { credentialsBroken = true; },
   };
 }
+
+type PanelScript = (send: (...keys: string[]) => void, screen: () => string) => void;
+const UP = "\x1b[A";
+const DOWN = "\x1b[B";
+const ENTER = "\r";
+const ESC = "\x1b";
+const okUsage = (async () => new Response(JSON.stringify({ usage: {
+  rolling: { status: "ok", percent: 5, resetsAt: "2099-01-01T00:00:00Z" },
+  weekly: { status: "ok", percent: 5, resetsAt: "2099-01-01T00:00:00Z" } } }))) as typeof fetch;
+const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 
 function goModels(registry: ModelRegistry) { return registry.getAll().filter((model) => model.provider === "opencode-go"); }
 
@@ -223,69 +260,69 @@ test("another extension's native provider is not replaced", async (t) => {
 const windows = process.platform === "win32" && process.arch === "x64";
 const secret = "synthetic-account-key-0001";
 
-function loginWith(answers: (string | Error)[]) {
-  const prompts: string[] = [];
-  return {
-    prompts,
-    interaction: {
-      async prompt(request: { type: string }) {
-        prompts.push(request.type);
-        const answer = answers.shift();
-        if (answer instanceof Error || answer === undefined) throw answer ?? new Error("Cancelled");
-        return answer;
-      },
-      notify() {},
-    },
-  };
-}
-
-test("login stores a masked-entry key only in the protected vault", { skip: !windows }, async (t) => {
+test("the account panel adds a key with hidden input and keeps it only in the vault", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  const entry = loginWith(["Synthetic one", secret]);
-  const credential = await app.runtime.login("opencode-go", "api_key", entry.interaction);
-  assert.deepEqual(entry.prompts, ["text", "secret"]);
-  assert.deepEqual(credential, { type: "api_key" });
+  let typing = "";
+  await app.panel([(send, screen) => {
+    send(UP, ENTER, ..."Synthetic one", ENTER, ...secret);
+    typing = screen();
+    send(ENTER);
+  }]);
+  assert.equal(typing.includes(secret), false);
+  assert.match(typing, new RegExp(`> ${"•".repeat(secret.length)}`));
   const vault = new AccountVault(join(app.agentDirectory, "opencode-go-quota-rotate"));
-  assert.deepEqual(await vault.read(), [{ id: (await vault.read())[0]?.id, label: "Synthetic one", apiKey: secret, enabled: true }]);
+  const stored = await vault.read();
+  assert.equal(stored.length, 1);
+  assert.deepEqual({ ...stored[0], id: "" }, { id: "", label: "Synthetic one", apiKey: secret, enabled: true });
+  assert.ok(app.notices.includes("Go account added."));
 });
 
 test("cancelled, empty or duplicate entries never change the vault", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["First", secret]).interaction);
+  await app.addAccount("First", secret);
   const vault = new AccountVault(join(app.agentDirectory, "opencode-go-quota-rotate"));
   const before = await vault.read();
-  await assert.rejects(app.runtime.login("opencode-go", "api_key", loginWith(["Cancelled", new Error("Cancelled")]).interaction));
-  await assert.rejects(app.runtime.login("opencode-go", "api_key", loginWith(["Empty", "  "]).interaction), /not valid/);
-  await assert.rejects(app.runtime.login("opencode-go", "api_key", loginWith(["Again", secret]).interaction), /already stored/);
+  await app.panel([(send) => send(UP, ENTER, ..."Cancelled", ENTER, ..."half-typed", ESC, ESC)]);
+  await app.panel([(send) => send(UP, ENTER, ..."Empty", ENTER, ..."   ", ENTER, ESC, ESC)]);
+  await app.panel([(send) => send(UP, ENTER, ..."Again", ENTER, ...secret, ENTER)]);
+  assert.ok(app.notices.some((notice) => /already stored/.test(notice)));
   assert.deepEqual(await vault.read(), before);
 });
 
-test("the accounts command disables and removes accounts without exposing keys", { skip: !windows }, async (t) => {
+test("one panel shows usage per window and lets you disable and remove accounts without exposing keys", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  const usage = (async () => new Response(JSON.stringify({ usage: {
+    rolling: { status: "ok", percent: 18, resetsAt: "2099-01-01T05:00:00Z" },
+    weekly: { status: "ok", percent: 40, resetsAt: "2099-01-07T00:00:00Z" },
+    monthly: { status: "ok", percent: 9, resetsAt: "2099-02-01T00:00:00Z" } } }))) as typeof fetch;
+  await app.panel([(send) => send(UP, ENTER, ..."Work", ENTER, ...secret, ENTER)], {}, usage);
   const vault = new AccountVault(join(app.agentDirectory, "opencode-go-quota-rotate"));
-  const menus: string[][] = [];
-  const answers = ["1. Work (on)", "Disable", "1. Work (off)", "Remove"];
-  const ui = {
-    notify(message: string) { app.notices.push(message); },
-    async select(_title: string, options: string[]) { menus.push(options); return answers.shift(); },
-    async confirm() { return true; },
-  };
-  const command = { ui } as unknown as ExtensionCommandContext;
-  await app.command()("", command);
-  assert.equal((await vault.read())[0]?.enabled, false);
-  await app.command()("", command);
+  const screens: string[] = [];
+  await app.panel([
+    (send, screen) => { screens.push(screen()); send(ENTER, ENTER); },
+    (send, screen) => { screens.push(screen()); send(ENTER, DOWN, ENTER, ENTER); },
+    (send, screen) => { screens.push(screen()); send(ESC); },
+  ], {}, usage);
+  assert.match(screens[0] ?? "", /Work.*5-hour 82% left.*week 60% left.*month 91% left/);
+  assert.match(screens[1] ?? "", /Work.*disabled/);
+  assert.match(screens[2] ?? "", /No Go accounts are stored/);
   assert.deepEqual(await vault.read(), []);
-  assert.equal(JSON.stringify([menus, app.notices]).includes(secret), false);
+  assert.equal(JSON.stringify([screens, app.notices]).includes(secret), false);
+});
+
+test("Pi's /login for OpenCode Go points to the panel, because its dialog does not hide keys", { skip: !windows }, async (t) => {
+  const app = await host(t);
+  await app.start();
+  await assert.rejects(app.runtime.login("opencode-go", "api_key", { async prompt() { return "x"; }, notify() {} }), /go-accounts/);
 });
 
 test("managed requests on all three Go APIs are signed per request with the stored key and never retried by the SDK", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  await app.addAccount("Work", secret);
   for (const api of ["anthropic-messages", "openai-completions", "openai-responses"] as const) {
     await app.emit("input", { text: "next" });
     const model = goModels(app.registry).find((entry) => entry.api === api);
@@ -317,7 +354,7 @@ test("managed requests on all three Go APIs are signed per request with the stor
 test("after a failed managed step the host retry sends nothing, and only new input reopens", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  await app.addAccount("Work", secret);
   const model = goModels(app.registry).find((entry) => entry.api === "openai-completions");
   assert.ok(model);
   let sends = 0;
@@ -347,7 +384,7 @@ test("after a failed managed step the host retry sends nothing, and only new inp
 test("compaction and branch summaries use their own send budget, not the main barrier", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  await app.addAccount("Work", secret);
   const model = goModels(app.registry).find((entry) => entry.api === "openai-completions");
   assert.ok(model);
   let sends = 0;
@@ -391,7 +428,7 @@ test("a failure before the send also closes the barrier, and injected extension 
   const stub = (async () => { sends++; return new Response("x", { status: 500 }); }) as typeof fetch;
   const noAccount = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
   assert.match(noAccount.errorMessage ?? "", /No enabled Go account/);
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  await app.addAccount("Work", secret);
   const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
   assert.match(retry.errorMessage ?? "", /host retry was not sent/);
   await app.emit("input", { text: "injected", source: "extension" });
@@ -403,7 +440,7 @@ test("a failure before the send also closes the barrier, and injected extension 
 test("the turn retried after a successful overflow compaction is allowed", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
+  await app.addAccount("Work", secret);
   const model = goModels(app.registry).find((entry) => entry.api === "openai-completions");
   assert.ok(model);
   let sends = 0;
@@ -423,23 +460,17 @@ test("the turn retried after a successful overflow compaction is allowed", { ski
   assert.equal(sends, 2);
 });
 
-test("/go-status lists every account with its remaining usage and never shows keys", { skip: !windows }, async (t) => {
+test("without the interactive panel the command lists usage as text and never offers adding keys", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Work", secret]).interaction);
-  await app.runtime.login("opencode-go", "api_key", loginWith(["Spare", "synthetic-account-key-0002"]).interaction);
-  t.mock.method(globalThis, "fetch", (async (_input: RequestInfo | URL, init?: RequestInit) => {
-    const key = new Headers(init?.headers).get("authorization");
-    const used = key === `Bearer ${secret}` ? 18 : 100;
-    return new Response(JSON.stringify({ usage: {
-      rolling: { status: used === 100 ? "rate-limited" : "ok", percent: used, resetsAt: "2099-01-01T05:00:00Z" },
-      weekly: { status: "ok", percent: 40, resetsAt: "2099-01-07T00:00:00Z" },
-      monthly: { status: "ok", percent: 9, resetsAt: "2099-02-01T00:00:00Z" } } }));
-  }) as typeof fetch);
-  const shown: string[] = [];
-  await app.command("go-status")("", { modelRegistry: app.registry, ui: { notify(message: string) { shown.push(message); } } } as unknown as ExtensionCommandContext);
-  const text = shown.join(" | ");
-  assert.match(text, /Work · 5h 82% left .*week 60% left .*month 91% left/);
-  assert.match(text, /Spare · exhausted · 5h 0% left/);
-  assert.equal(text.includes(secret) || text.includes("synthetic-account-key-0002"), false);
+  await app.addAccount("Work", secret);
+  const selects: string[][] = [];
+  await app.panel([], {
+    async custom() { return undefined; },
+    async select(_title: string, options: string[]) { selects.push(options); return selects.length === 1 ? options[0] : "Disable"; },
+  });
+  assert.ok(app.notices.some((notice) => /Work · 5-hour 95% left/.test(notice)));
+  assert.equal(selects.flat().some((option) => /Add/.test(option)), false);
+  const vault = new AccountVault(join(app.agentDirectory, "opencode-go-quota-rotate"));
+  assert.equal((await vault.read())[0]?.enabled, false);
 });
