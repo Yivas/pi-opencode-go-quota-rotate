@@ -42,13 +42,16 @@ export async function acquireFileLock(path: string, signal?: AbortSignal): Promi
   // OPEN_ALWAYS; share reads/writes but never deletion. Windows releases the
   // handle's exclusive range on process exit; unlike a mutex it is not recursive
   // across separate handles in one Node thread. Never delete/replace this file.
-  // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-lockfileex
   const handle: unknown = api.create(path, 0xc0000000, 3, null, 4, 0x80, null);
   if (typeof handle !== "bigint" || handle === 0n || handle === -1n || handle === 0xffffffffffffffffn) {
     throw new StorageError("unavailable");
   }
   const offset = { Internal: 0, InternalHigh: 0, Offset: 0, OffsetHigh: 0, hEvent: null };
-  if (!api.lock(handle, 3, 0, 1, 0, offset)) {
+  // LOCKFILE_EXCLUSIVE_LOCK without FAIL_IMMEDIATELY waits in the native worker.
+  // The helper's absolute deadline and host cancellation bound the wait by
+  // terminating the process, without needing the blocked worker to cooperate.
+  // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-lockfileex
+  if (!api.lock(handle, 2, 0, 1, 0, offset)) {
     api.close(handle);
     // No GetLastError inference across FFI: unknown failure stays unavailable,
     // rather than being labelled busy and retried on an invented error code.

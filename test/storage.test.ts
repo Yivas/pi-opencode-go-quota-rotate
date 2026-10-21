@@ -35,11 +35,54 @@ function faultHelper(t: TestContext, mode: "block" | "before" | "after", marker?
 }
 const account = { id: "fixture-account-0001", label: "Synthetic fixture", apiKey: "synthetic-not-a-real-key-12345", enabled: true };
 
+const secondAccount = { id: "fixture-account-0002", label: "Synthetic second fixture", apiKey: "synthetic-not-a-real-key-67890", enabled: true };
+
 async function fixture(t: TestContext) {
   const parent = await mkdtemp(join(tmpdir(), "go-vault-"));
-  t.after(() => rm(parent, { recursive: true, force: true }));
   const root = join(parent, "vault");
-  return { parent, root, vault: new AccountVault(root), path: join(root, "accounts.json") };
+  const cleanups: (() => Promise<void>)[] = [];
+  // One hook, in order: Node runs after hooks in registration order, so every
+  // lock owner must exit before its vault directory can be removed.
+  t.after(async () => {
+    for (const cleanup of cleanups) await cleanup();
+    await rm(parent, { recursive: true, force: true });
+  });
+  return { parent, root, vault: new AccountVault(root), path: join(root, "accounts.json"), cleanups };
+}
+
+async function staysPending(promise: Promise<unknown>, milliseconds: number): Promise<boolean> {
+  let settled = false;
+  void promise.then(() => { settled = true; }, () => { settled = true; });
+  await delay(milliseconds);
+  return !settled;
+}
+
+// A real Windows lock on the vault's range, held by a process with no deadline.
+async function holdVault(vaultFixture: { root: string; cleanups: (() => Promise<void>)[] }) {
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/hold-vault.ts", import.meta.url)), vaultFixture.root], {
+    windowsHide: true,
+    stdio: ["ignore", "ignore", "ignore", "ipc"],
+    env: { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", PATH: dirname(process.execPath) },
+  });
+  const closed = once(child, "close");
+  let stopped = false;
+  const stop = async () => {
+    if (stopped) return;
+    stopped = true;
+    child.kill();
+    await closed;
+  };
+  vaultFixture.cleanups.push(stop);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const started = await Promise.race([
+      once(child, "message"),
+      closed.then(() => { throw new Error("Lock holder exited before acquiring its range"); }),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Lock holder did not acquire its range")), 5000); }),
+    ]);
+    assert.deepEqual(started[0], { type: "locked" });
+  } finally { clearTimeout(timer); }
+  return { child, stop };
 }
 
 test("Windows protection persists a synthetic credential and recovers it without plaintext on disk", { skip: !windows }, async (t) => {
@@ -70,18 +113,40 @@ test("an existing directory with broader ACLs is rejected without weakening them
   assert.equal((await lstat(root)).isDirectory(), true);
 });
 
-test("a competing operation cannot read or overwrite a vault while its transaction is open", { skip: !windows }, async (t) => {
-  const { vault, root } = await fixture(t);
+test("a competing read waits for an open transaction and returns the committed snapshot", { skip: !windows, timeout: 12000 }, async (t) => {
+  const { vault, root, cleanups } = await fixture(t);
+  await vault.modify(() => [account]);
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => { release = resolve; });
   let entered: () => void = () => {};
   const enteredChange = new Promise<void>((resolve) => { entered = resolve; });
-  const writing = vault.modify(async () => { entered(); await held; return [account]; });
+  const owner = vault.modify(async (current) => { entered(); await held; return [...current, secondAccount]; });
+  cleanups.push(async () => { release(); await owner.catch(() => {}); });
   await enteredChange;
-  await assert.rejects(new AccountVault(root).read(), { code: "unavailable" });
+  const reading = new AccountVault(root).read();
+  assert.equal(await staysPending(reading, 400), true);
   release();
-  await writing;
-  assert.deepEqual(await vault.read(), [account]);
+  assert.deepEqual(await reading, [account, secondAccount]);
+  await owner;
+});
+
+test("a competing write waits for an open transaction and commits on the released vault", { skip: !windows, timeout: 12000 }, async (t) => {
+  const { vault, root, cleanups } = await fixture(t);
+  await vault.modify(() => [account]);
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let entered: () => void = () => {};
+  const enteredChange = new Promise<void>((resolve) => { entered = resolve; });
+  const owner = vault.modify(async (current) => { entered(); await held; return [...current, secondAccount]; });
+  cleanups.push(async () => { release(); await owner.catch(() => {}); });
+  await enteredChange;
+  const writing = new AccountVault(root).modify((current) => current.map((entry) => ({ ...entry, enabled: false })));
+  assert.equal(await staysPending(writing, 400), true);
+  release();
+  const disabled = [{ ...account, enabled: false }, { ...secondAccount, enabled: false }];
+  assert.deepEqual(await writing, disabled);
+  await owner;
+  assert.deepEqual(await vault.read(), disabled);
 });
 
 test("cancellation rejects native work without creating a credential file", { skip: !windows }, async (t) => {
@@ -138,42 +203,45 @@ test("an exception in a transaction releases its operating-system lock", { skip:
   assert.deepEqual(await vault.read(), [account]);
 });
 
-test("a killed owner cannot leave an orphan lock that prevents reopening protected storage", { skip: !windows, timeout: 15000 }, async (t) => {
-  const { root, vault } = await fixture(t);
-  await vault.modify(() => [account]);
-  const child = spawn(process.execPath, [fileURLToPath(new URL("./fixtures/hold-vault.ts", import.meta.url)), root], {
-    windowsHide: true,
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
-    env: { SystemRoot: process.env.SystemRoot ?? "C:\\Windows", PATH: dirname(process.execPath) },
-  });
-  const closed = once(child, "close");
-  t.after(async () => { child.kill(); await closed; });
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const started = await Promise.race([
-      once(child, "message"),
-      closed.then(() => { throw new Error("Owned fixture exited before acquiring its lock"); }),
-      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Owned fixture did not acquire its lock")), 5000); }),
-    ]);
-    assert.deepEqual(started[0], { type: "locked" });
-  } finally { clearTimeout(timer); }
-  await assert.rejects(vault.read(), { code: "unavailable" });
-  child.kill();
-  await closed;
+test("a waiting contender recovers when the lock owner is killed", { skip: !windows, timeout: 15000 }, async (t) => {
+  const vaultFixture = await fixture(t);
+  await vaultFixture.vault.modify(() => [account]);
+  const holder = await holdVault(vaultFixture);
+  const reading = new AccountVault(vaultFixture.root).read();
+  assert.equal(await staysPending(reading, 500), true);
+  await holder.stop();
+  assert.deepEqual(await reading, [account]);
   // The same persistent lock file stays in place. No stale-owner deletion,
   // TTL, process-list inspection or manual recovery is involved.
-  assert.equal((await lstat(join(root, "write.lock"))).isFile(), true);
-  for (let attempt = 0; ; attempt++) {
-    try {
-      assert.deepEqual(await new AccountVault(root).read(), [account]);
-      break;
-    } catch (error) {
-      // Only this test knows its owner has exited. Allow bounded OS teardown;
-      // production never guesses that an unavailable lock means a dead owner.
-      if (attempt === 9 || !(error && typeof error === "object" && "code" in error && error.code === "unavailable")) throw error;
-      await delay(50);
-    }
-  }
+  assert.equal((await lstat(join(vaultFixture.root, "write.lock"))).isFile(), true);
+});
+
+test("a held lock times out as unavailable while its owner is still alive", { skip: !windows, timeout: 20000 }, async (t) => {
+  const vaultFixture = await fixture(t);
+  await vaultFixture.vault.modify(() => [account]);
+  const holder = await holdVault(vaultFixture);
+  const started = performance.now();
+  await assert.rejects(vaultFixture.vault.read(), { code: "unavailable" });
+  const waited = performance.now() - started;
+  // Bounded outside FFI by the helper deadline and the host deadline, and long
+  // enough to prove the contender waited instead of failing on a busy lock.
+  assert.ok(waited > 4000 && waited < 8500, `unexpected wait of ${Math.round(waited)}ms`);
+  assert.equal(holder.child.exitCode, null);
+  await holder.stop();
+  assert.deepEqual(await new AccountVault(vaultFixture.root).read(), [account]);
+});
+
+test("cancelling a waiting contender leaves the owner's lock and later reads intact", { skip: !windows, timeout: 15000 }, async (t) => {
+  const vaultFixture = await fixture(t);
+  await vaultFixture.vault.modify(() => [account]);
+  const holder = await holdVault(vaultFixture);
+  const cancellation = new AbortController();
+  const reading = vaultFixture.vault.read(cancellation.signal);
+  assert.equal(await staysPending(reading, 500), true);
+  cancellation.abort();
+  await assert.rejects(reading, { name: "AbortError" });
+  await holder.stop();
+  assert.deepEqual(await new AccountVault(vaultFixture.root).read(), [account]);
 });
 
 test("protected storage does not load Koffi into the caller", { skip: !windows }, async (t) => {
