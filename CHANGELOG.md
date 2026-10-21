@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+## 0.2.2 - 2026-10-22
+
+- Fix protected storage failing immediately when another process or subagent is using it. Reads and writes now wait for the exclusive lock within the existing operation deadline; cancellation and failure handling are unchanged.
+
 ## 0.2.1 - 2026-10-20
 
 - Fix "state.transport.status is not a function" after updating with `/reload` in the same session: objects created by the previous release are replaced instead of reused.
