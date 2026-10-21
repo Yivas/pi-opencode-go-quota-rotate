@@ -33,6 +33,22 @@ function faultHelper(t: TestContext, mode: "block" | "before" | "after", marker?
   t.after(restore);
   return restore;
 }
+function observeHelperExits(t: TestContext): boolean[] {
+  const exited: boolean[] = [];
+  const original = childProcess.spawn;
+  const patched = t.mock.method(childProcess, "spawn", ((command: string, args: readonly string[] = [], options: SpawnOptions = {}) => {
+    const child = original(command, args, options);
+    if (args[0]?.endsWith("win32-worker.cjs")) {
+      const index = exited.push(false) - 1;
+      child.once("close", () => { exited[index] = true; });
+    }
+    return child;
+  }) as typeof childProcess.spawn);
+  syncBuiltinESMExports();
+  t.after(() => { patched.mock.restore(); syncBuiltinESMExports(); });
+  return exited;
+}
+
 const account = { id: "fixture-account-0001", label: "Synthetic fixture", apiKey: "synthetic-not-a-real-key-12345", enabled: true };
 
 const secondAccount = { id: "fixture-account-0002", label: "Synthetic second fixture", apiKey: "synthetic-not-a-real-key-67890", enabled: true };
@@ -220,9 +236,11 @@ test("a held lock times out as unavailable while its owner is still alive", { sk
   const vaultFixture = await fixture(t);
   await vaultFixture.vault.modify(() => [account]);
   const holder = await holdVault(vaultFixture);
+  const exited = observeHelperExits(t);
   const started = performance.now();
   await assert.rejects(vaultFixture.vault.read(), { code: "unavailable" });
   const waited = performance.now() - started;
+  assert.deepEqual(exited, [true]);
   // Bounded outside FFI by the helper deadline and the host deadline, and long
   // enough to prove the contender waited instead of failing on a busy lock.
   assert.ok(waited > 4000 && waited < 8500, `unexpected wait of ${Math.round(waited)}ms`);
@@ -235,11 +253,14 @@ test("cancelling a waiting contender leaves the owner's lock and later reads int
   const vaultFixture = await fixture(t);
   await vaultFixture.vault.modify(() => [account]);
   const holder = await holdVault(vaultFixture);
+  const exited = observeHelperExits(t);
   const cancellation = new AbortController();
   const reading = vaultFixture.vault.read(cancellation.signal);
   assert.equal(await staysPending(reading, 500), true);
   cancellation.abort();
   await assert.rejects(reading, { name: "AbortError" });
+  assert.deepEqual(exited, [true]);
+  assert.equal(holder.child.exitCode, null);
   await holder.stop();
   assert.deepEqual(await new AccountVault(vaultFixture.root).read(), [account]);
 });
