@@ -1,4 +1,5 @@
 import { messages } from "./locales/en.ts";
+import type { FailureCause } from "./failure.ts";
 
 interface Scope { sends: number; readonly max: number }
 
@@ -9,15 +10,19 @@ interface Scope { sends: number; readonly max: number }
  * carry their own signal and their own send budget, independent of the main one.
  */
 /** Bumped whenever StepGate's methods change; see transportRevision. */
-export const gateRevision = 1;
+export const gateRevision = 2;
 
 export class StepGate {
   readonly revision = gateRevision;
   #open = true;
+  #failure: FailureCause = { category: "unknown" };
   readonly #scopes = new WeakMap<AbortSignal, Scope>();
 
   /** Explicit user input (or the retry Pi runs after a successful overflow compaction) reopens the main barrier. */
-  reopen(): void { this.#open = true; }
+  reopen(): void {
+    this.#open = true;
+    this.#failure = { category: "unknown" };
+  }
 
   /** compaction: two summary steps, four sends; branch summary: one step, two sends. */
   scope(signal: AbortSignal, kind: "compaction" | "branch"): void {
@@ -25,7 +30,7 @@ export class StepGate {
   }
 
   /** Called before any send. Returns the per-send budget check and the outcome reporter. */
-  authorize(signal: AbortSignal): { take(): void; finish(failed: boolean): void } {
+  authorize(signal: AbortSignal): { take(): void; finish(failed: boolean, cause?: FailureCause): void } {
     const scope = this.#scopes.get(signal);
     if (scope) {
       return {
@@ -33,7 +38,12 @@ export class StepGate {
         finish() {},
       };
     }
-    if (!this.#open) throw new Error(messages.barrierClosed);
-    return { take() {}, finish: (failed) => { if (failed) this.#open = false; } };
+    if (!this.#open) throw new Error(messages.barrierClosed(this.#failure));
+    return { take() {}, finish: (failed, cause) => {
+      if (failed && this.#open) {
+        this.#failure = cause ?? { category: "unknown" };
+        this.#open = false;
+      }
+    } };
   }
 }

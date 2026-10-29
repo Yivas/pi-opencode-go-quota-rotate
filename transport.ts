@@ -3,6 +3,8 @@ import type { QuotaObservation } from "./quota.ts";
 import { choose, isFresh } from "./selection.ts";
 import type { StoredAccount } from "./storage/accounts.ts";
 import { messages } from "./locales/en.ts";
+import { normalizeFailure } from "./failure.ts";
+import type { FailureCause } from "./failure.ts";
 
 export const queryIntervalMs = 60_000;
 const selectionDeadlineMs = 10_000;
@@ -41,7 +43,7 @@ export interface AccountStatus {
  * Bumped whenever ManagedTransport's methods change. The instance outlives a
  * /reload, so a session upgraded in place must not reuse an older object.
  */
-export const transportRevision = 2;
+export const transportRevision = 3;
 
 export class ManagedTransport {
   readonly revision = transportRevision;
@@ -138,7 +140,7 @@ export class ManagedTransport {
    * One fetch for one request: at most two sends (the account and, only after
    * confirmed exhaustion, one alternate). SDK retries pass through here too.
    */
-  signedFetch(accounts: StoredAccount[], first: StoredAccount, base: FetchLike, signal: AbortSignal, take: () => void = () => {}): FetchLike {
+  signedFetch(accounts: StoredAccount[], first: StoredAccount, base: FetchLike, signal: AbortSignal, take: () => void = () => {}, report: (cause: FailureCause | undefined) => void = () => {}): FetchLike {
     let current = first;
     let sends = 0;
     return async (input, init) => {
@@ -151,6 +153,7 @@ export class ManagedTransport {
         headers.set("x-api-key", current.apiKey);
         // Never follow a redirect with the key attached, whichever header the SDK reads.
         const response = await base(input, { ...init, headers, redirect: "error" });
+        report(response.status >= 400 ? normalizeFailure({ status: response.status, headers: response.headers }) : undefined);
         if (response.status === 401) { this.reject(current); return response; }
         if (response.status !== 429 || sends > 1) return response;
         if (!(await this.confirmExhausted(current, base, signal))) return response;

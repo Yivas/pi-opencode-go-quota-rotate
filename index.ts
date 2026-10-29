@@ -8,6 +8,8 @@ import { addAccount, removeAccount, toggleAccount } from "./storage/account-setu
 import { AccountVault } from "./storage/vault.ts";
 import type { StoredAccount } from "./storage/accounts.ts";
 import { gateRevision, StepGate } from "./gate.ts";
+import { normalizeFailure } from "./failure.ts";
+import type { FailureCause } from "./failure.ts";
 import { AccountMenu } from "./menu.ts";
 import type { MenuChoice } from "./menu.ts";
 import { formatStatus } from "./status.ts";
@@ -128,6 +130,7 @@ function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, 
     // Decided before any query or send; a closed barrier costs no network.
     const grant = gateOfState(state).authorize(signal);
     let next: ApiStreamOptions<Api>;
+    let transportFailure: FailureCause | undefined;
     try {
       const base = requested?.fetch ?? globalThis.fetch;
       // Authorization happens here, from the protected accounts as they are now.
@@ -136,17 +139,20 @@ function managedStream(state: CatalogState, simple: boolean, model: Model<Api>, 
       if (accounts.length === 0) throw new Error(messages.noAccounts);
       const first = await transport.select(accounts, base, signal);
       if (!first) throw new Error(signal.aborted ? messages.storageCancelled : messages.noUsableAccount);
-      const signed = transport.signedFetch(accounts, first, base, signal, grant.take);
+      const signed = transport.signedFetch(accounts, first, base, signal, grant.take, (cause) => { transportFailure = cause; });
       // Retries inside the SDK would bypass the attempt budget; the transport counts every send.
       next = { ...(options as object), apiKey: "managed", fetch: signed, maxRetries: 0 } as ApiStreamOptions<Api>;
     } catch (error) {
       // A failure before the send still ends the step: the host retry must not retry it.
-      grant.finish(true);
+      grant.finish(true, normalizeFailure(error, transportFailure, signal.aborted));
       throw error;
     }
     const result = simple ? raw.streamSimple(model, context, next as SimpleStreamOptions) : raw.stream(model, context, next);
     // The barrier closes before control returns to the host.
-    void result.result().then((message) => grant.finish(message.stopReason === "error" || message.stopReason === "aborted"), () => grant.finish(true));
+    void result.result().then((message) => {
+      const failed = message.stopReason === "error" || message.stopReason === "aborted";
+      grant.finish(failed, failed ? normalizeFailure(message.errorMessage, transportFailure, message.stopReason === "aborted") : undefined);
+    }, (error: unknown) => grant.finish(true, normalizeFailure(error, transportFailure, signal.aborted)));
     return result;
   });
 }

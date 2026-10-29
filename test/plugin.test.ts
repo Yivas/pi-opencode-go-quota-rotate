@@ -351,34 +351,66 @@ test("managed requests on all three Go APIs are signed per request with the stor
   }
 });
 
-test("after a failed managed step the host retry sends nothing, and only new input reopens", { skip: !windows }, async (t) => {
+test("host retries preserve only the original safe cause, and new input clears it", { skip: !windows }, async (t) => {
+  const app = await host(t);
+  await app.start();
+  await app.addAccount("Work", secret);
+  for (const api of ["anthropic-messages", "openai-completions", "openai-responses"] as const) {
+    await app.emit("input", { text: "next" });
+    const model = goModels(app.registry).find((entry) => entry.api === api);
+    assert.ok(model);
+    let sends = 0;
+    const stub = (async (input: RequestInfo | URL) => {
+      if (String(input).endsWith("/usage")) return okUsage(input);
+      sends++;
+      return new Response(JSON.stringify({ type: "server_error", message:
+        `Upstream request failed: [ttft_admission_refused] the cell is at capacity; retry shortly (after ${api === "anthropic-messages" ? 29 : 33} s) key=${secret}`,
+        request_id: "synthetic-request-private", account_id: "synthetic-account-private",
+      }), { status: 429, headers: api === "anthropic-messages" ? { "retry-after": "33" } : {} });
+    }) as typeof fetch;
+    const first = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
+    assert.equal(first.stopReason, "error");
+    assert.equal(sends, 1);
+    // A new run and repeated retries must neither send nor replace the first cause.
+    await app.emit("turn_start", {});
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
+      assert.equal(retry.stopReason, "error");
+      assert.equal(retry.errorMessage, "The previous request failed (429 capacity, retry after 33 s). quota-rotate blocked the host retry to protect your quota; send a new message to try again.");
+      for (const privateValue of [secret, "synthetic-request-private", "synthetic-account-private"]) {
+        assert.equal(JSON.stringify([retry, app.notices]).includes(privateValue), false);
+      }
+      assert.equal(sends, 1);
+    }
+    await app.emit("input", { text: "again" });
+    const unknown = (async () => { sends++; throw new Error("synthetic-unclassified-private"); }) as typeof fetch;
+    await app.runtime.completeSimple(model, { messages: [] }, { fetch: unknown });
+    const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: unknown });
+    assert.equal(sends, 2);
+    assert.equal(retry.errorMessage, "The previous request failed (cause unknown). quota-rotate blocked the host retry to protect your quota; send a new message to try again.");
+    assert.equal(JSON.stringify(retry).includes("synthetic-unclassified-private"), false);
+  }
+});
+
+test("a cancelled request is reported as cancelled without sending the host retry", { skip: !windows }, async (t) => {
   const app = await host(t);
   await app.start();
   await app.addAccount("Work", secret);
   const model = goModels(app.registry).find((entry) => entry.api === "openai-completions");
   assert.ok(model);
+  const controller = new AbortController();
   let sends = 0;
-  const stub = (async (input: RequestInfo | URL) => {
-    if (String(input).endsWith("/usage")) {
-      return new Response(JSON.stringify({ usage: {
-        rolling: { status: "ok", percent: 5, resetsAt: "2099-01-01T00:00:00Z" },
-        weekly: { status: "ok", percent: 5, resetsAt: "2099-01-01T00:00:00Z" } } }));
-    }
+  const cancelled = (async (input: RequestInfo | URL) => {
+    if (String(input).endsWith("/usage")) return okUsage(input);
     sends++;
-    return new Response("unavailable", { status: 500 });
+    controller.abort();
+    throw new DOMException("synthetic-cancellation-private", "AbortError");
   }) as typeof fetch;
-  const first = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
-  assert.equal(first.stopReason, "error");
+  const first = await app.runtime.completeSimple(model, { messages: [] }, { fetch: cancelled, signal: controller.signal });
+  assert.equal(first.stopReason, "aborted");
+  const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: cancelled });
   assert.equal(sends, 1);
-  // The host retries in a new run: no turn event or fresh signal reopens the barrier.
-  await app.emit("turn_start", {});
-  const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
-  assert.equal(retry.stopReason, "error");
-  assert.match(retry.errorMessage ?? "", /host retry was not sent/);
-  assert.equal(sends, 1);
-  await app.emit("input", { text: "again" });
-  await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
-  assert.equal(sends, 2);
+  assert.equal(retry.errorMessage, "The previous request failed (cancelled). quota-rotate blocked the host retry to protect your quota; send a new message to try again.");
 });
 
 test("compaction and branch summaries use their own send budget, not the main barrier", { skip: !windows }, async (t) => {
@@ -430,10 +462,10 @@ test("a failure before the send also closes the barrier, and injected extension 
   assert.match(noAccount.errorMessage ?? "", /No enabled Go account/);
   await app.addAccount("Work", secret);
   const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
-  assert.match(retry.errorMessage ?? "", /host retry was not sent/);
+  assert.match(retry.errorMessage ?? "", /blocked the host retry/);
   await app.emit("input", { text: "injected", source: "extension" });
   const still = await app.runtime.completeSimple(model, { messages: [] }, { fetch: stub });
-  assert.match(still.errorMessage ?? "", /host retry was not sent/);
+  assert.match(still.errorMessage ?? "", /blocked the host retry/);
   assert.equal(sends, 0);
 });
 
@@ -518,6 +550,6 @@ test("a /reload of the same release keeps the closed barrier and the quota state
   assert.equal(state?.transport, before.transport);
   assert.equal(state?.gate, before.gate);
   const retry = await app.runtime.completeSimple(model, { messages: [] }, { fetch: failing });
-  assert.match(retry.errorMessage ?? "", /host retry was not sent/);
+  assert.match(retry.errorMessage ?? "", /blocked the host retry/);
   assert.equal(sends, 1);
 });

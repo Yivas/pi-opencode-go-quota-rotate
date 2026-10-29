@@ -1,3 +1,5 @@
+import type { FailureCause } from "../failure.ts";
+
 export const messages = {
   name: "Go quota rotation",
   blocked: "Go quota rotation is not ready; managed requests are blocked.",
@@ -13,7 +15,12 @@ export const messages = {
   storageCorrupt: "Protected storage could not be authenticated. Managed requests remain blocked.",
   noAccounts: "No enabled Go account is available; managed requests are blocked.",
   noUsableAccount: "No Go account is currently usable (exhausted, rejected or quota unavailable).",
-  barrierClosed: "The previous managed step failed. Send a new message to try again; the host retry was not sent.",
+  barrierClosed: (cause: FailureCause) => {
+    const category = cause.category === "unknown" ? "cause unknown" : cause.category;
+    const description = [cause.status, category].filter((part) => part !== undefined).join(" ");
+    const wait = cause.retryAfterSeconds === undefined ? "" : `, retry after ${cause.retryAfterSeconds} s`;
+    return `The previous request failed (${description}${wait}). quota-rotate blocked the host retry to protect your quota; send a new message to try again.`;
+  },
   unsupportedPlatform: "Go quota rotation needs protected storage that exists only on Windows x64 for now. It was not activated; original Go is unchanged.",
   attemptLimit: "The managed request attempt limit was reached.",
   accountLabelPrompt: "Account name (shown in lists, not secret)",
