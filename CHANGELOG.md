@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-10-29
+
+- When a failed request blocks Pi's automatic retry, the error now shows the HTTP status, kind of failure and provider's requested wait when available (for example, "429 capacity, retry after 33 s"), or says the cause is unknown or the request was cancelled. The retry stays blocked to protect your quota. Keys, headers, response bodies and account identifiers are not included.
+
 ## 0.2.2 - 2026-10-22
 
 - Fix protected storage failing immediately when another process or subagent is using it. Reads and writes now wait for the exclusive lock within the existing operation deadline; cancellation and failure handling are unchanged.
